@@ -61,6 +61,7 @@ uint64_t mms_get_raw_time_length (mms_t *instance);
 uint64_t mms_get_file_time (mms_t *instance);
 uint32_t mms_get_length (mms_t *instance);
 void     mms_close (mms_t *instance);
+void     mms_abort (mms_t *instance);
 
 int      mms_peek_header (mms_t *instance, char *data, int maxsize);
 

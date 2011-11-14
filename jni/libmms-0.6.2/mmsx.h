@@ -51,6 +51,7 @@ uint64_t  mmsx_get_raw_time_length (mmsx_t *instance);
 uint32_t  mmsx_get_length (mmsx_t *instance);
 uint64_t  mmsx_get_file_time (mmsx_t *instance);
 void      mmsx_close (mmsx_t *instance);
+void      mmsx_abort(mmsx_t *instance);
 
 int       mmsx_peek_header (mmsx_t *instance, char *data, int maxsize);
 

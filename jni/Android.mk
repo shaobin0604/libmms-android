@@ -16,7 +16,7 @@ include $(CLEAR_VARS)
 LOGLEVELS := ERROR WARN INFO DEBUG TRACE
 cflags_loglevels := $(foreach ll,$(LOGLEVELS),-DAACD_LOGLEVEL_$(ll))
 
-LOCAL_MODULE    := libmms
+LOCAL_MODULE    := libmms_app
 LOCAL_SRC_FILES := libmms-0.6.2/mms.c \
 					libmms-0.6.2/mmsh.c \
 					libmms-0.6.2/mmsx.c \

@@ -1489,6 +1489,15 @@ void mms_close (mms_t *this) {
   free (this);
 }
 
+void mms_abort (mms_t *this) {
+  if (this == NULL)
+    return;
+  if (this->s != -1) {
+    closesocket(this->s);
+    this->s = -1;
+  }
+}
+
 double mms_get_time_length (mms_t *this) {
   return (double)(this->time_len) / 1e7;
 }

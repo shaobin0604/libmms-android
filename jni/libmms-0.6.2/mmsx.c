@@ -143,6 +143,14 @@ void mmsx_close (mmsx_t *mmsx)
   free(mmsx);
 }
 
+void mmsx_abort (mmsx_t *mmsx)
+{
+  if(mmsx->connection)
+    mms_abort(mmsx->connection);
+  else
+    mmsh_abort(mmsx->connection_h);
+}
+
 int mmsx_peek_header (mmsx_t *mmsx, char *data, int maxsize)
 {
   if(mmsx->connection)

@@ -47,6 +47,7 @@ uint64_t mmsh_get_raw_time_length (mmsh_t *instance);
 uint64_t mmsh_get_file_time (mmsh_t *instance);
 mms_off_t mmsh_get_current_pos (mmsh_t *instance);
 void     mmsh_close (mmsh_t *instance);
+void     mmsh_abort (mmsh_t *instance);
 
 int      mmsh_peek_header (mmsh_t *instance, char *data, int maxsize);
 
