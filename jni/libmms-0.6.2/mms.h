@@ -36,6 +36,11 @@ extern "C" {
 
 typedef struct mms_s mms_t;
 
+/* +++++ new api added by shaobin */
+mms_t*   mms_new ();
+int      mms_connect_ex (mms_io_t *io, mms_t *instance, void *data, const char *url, int bandwidth);
+/* ----- new api added by shaobin */
+
 mms_t*   mms_connect (mms_io_t *io, void *data, const char *url, int bandwidth);
 
 int      mms_read (mms_io_t *io, mms_t *instance, char *data, int len);

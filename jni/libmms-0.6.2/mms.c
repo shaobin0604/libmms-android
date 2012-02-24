@@ -70,7 +70,7 @@
 #ifdef AACD_LOGLEVEL_DEBUG
 #include <android/log.h>
 #define lprintf(...) \
-    __android_log_print(ANDROID_LOG_DEBUG, "libmms", __VA_ARGS__)
+    __android_log_print(ANDROID_LOG_DEBUG, ANDROID_LOG_MODULE, __VA_ARGS__)
 #else
 #define lprintf(...) 
 #endif
@@ -89,6 +89,8 @@
 #include "asfheader.h"
 #include "uri.h"
 #include "mms-common.h"
+
+#include <pthread.h>
 
 /* 
  * mms specific types 
@@ -122,8 +124,20 @@ struct mms_packet_header_s {
   uint32_t  packet_seq;
 };
 
+
+typedef enum state_s {
+    READY,
+    CONNECTING,
+    CONNECTED,
+} state_st;
+
 struct mms_s {
-  int           s;
+  int           s; /* the socket fd */
+  
+/* shaobin >>>>> */
+  state_st      state;  
+  pthread_mutex_t mutex;
+/* shaobin <<<<< */
   
   /* url parsing */
   GURI         *guri;
@@ -176,6 +190,7 @@ struct mms_s {
 };
 
 const static char *const mms_proto_s[] = { "mms", "mmst", NULL };
+
 
 #include "mms-common-funcs.h"
 
@@ -350,6 +365,177 @@ void mms_set_default_io_impl(const mms_io_t *io)
     mms_default_io.connect_data = fallback_io.connect_data;
   }
 }
+
+//----------------------------------------------------------------------
+#include "myio.h"
+
+static off_t my_io_write(void *data, int socket, char *buf, mms_off_t num) {
+    lprintf("my_io_write ...\n");
+    if (data == NULL) {
+        lprintf("my_io_write: data is NULL\n");
+        return -1;
+    }
+    
+    mms_t* this = (mms_t*) data;
+    
+    if (this->state == CONNECTED) {
+        while (num > 0) {
+            ssize_t n = MySend(socket, buf, num, 0);
+
+            if (n < 0) {
+
+                return n;
+            } else if (n == 0) {
+
+                return -1;
+            }
+
+            num -= (size_t)n;
+            buf += (size_t)n;
+        }
+    } else {
+        lprintf("my_io_write: not connected\n");
+        return -1;
+    }
+}
+
+static off_t my_io_read(void *data, int socket, char *buf, mms_off_t num) {
+    lprintf("my_io_read ...\n");
+    if (data == NULL) {
+        lprintf("my_io_read: data is NULL\n");
+        return -1;
+    }
+    
+    mms_t* this = (mms_t*) data;
+    
+    if (this->state == CONNECTED) {
+        size_t total = 0;
+        while (total < num) {
+            ssize_t n = MyReceive(socket, (char *)buf + total, num - total, 0);
+
+            if (n < 0) {
+                lprintf("recv failed, errno = %d (%s)", (int)n, strerror(-n));
+
+                return (ssize_t)-1;
+            } else if (n == 0) {
+
+                lprintf("recv failed, server is gone, total received: %d bytes",
+                     total);
+
+                return total == 0 ? (ssize_t)-1 : total;
+            }
+
+            total += (size_t)n;
+        }
+
+        return (ssize_t)total;
+        
+    } else {
+        lprintf("my_io_read: not connected\n");
+        return -1;
+    }
+}
+
+static int my_io_connect(void *data, const char *host, int port) {
+	lprintf("my_io_connect ...\n");
+    if (data == NULL) {
+        lprintf("my_io_connect: data is NULL\n");
+        return -1;
+    }
+    
+    mms_t* this = (mms_t*) data;
+    
+    pthread_mutex_lock(&(this->mutex));
+
+	lprintf("1. my_io_connect state: %d\n", this->state);
+    
+    if (this->state == CONNECTED) {
+        lprintf("already connected\n");
+        
+        pthread_mutex_unlock(&(this->mutex));
+        return -1;
+    }
+    
+    if (port < 0 || port > (int) USHRT_MAX) {
+        lprintf("port: %d invalid\n", port);
+        
+        pthread_mutex_unlock(&(this->mutex));
+        return -1;
+    }
+
+    char service[sizeof("65536")];
+    sprintf(service, "%d", port);
+    struct addrinfo hints, *ai;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_flags = AI_ADDRCONFIG | AI_NUMERICSERV;
+    hints.ai_socktype = SOCK_STREAM;
+
+    int ret = getaddrinfo(host, service, &hints, &ai);
+    if (ret) {
+        lprintf("unable to resolve host %s\n", host);
+        
+        pthread_mutex_unlock(&(this->mutex));
+        return -1;
+    }
+    
+    this->state = CONNECTING;
+
+	lprintf("2. my_io_connect state: %d\n", this->state);
+
+    int res = -1;
+    int s = -1;
+    struct addrinfo *tmp;
+    for (tmp = ai; tmp; tmp = tmp->ai_next) {
+        s = socket(tmp->ai_family, tmp->ai_socktype, tmp->ai_protocol);
+        if (s < 0) {
+            continue;
+        }
+
+        setReceiveTimeout(s, 30);  // Time out reads after 30 secs by default.
+        
+        pthread_mutex_unlock(&(this->mutex));
+
+        res = MyConnect(s, tmp->ai_addr, tmp->ai_addrlen);
+        
+        pthread_mutex_lock(&(this->mutex));
+        
+        if (this->state != CONNECTING) {
+            close(s);
+            freeaddrinfo(ai);
+            
+            pthread_mutex_unlock(&(this->mutex));
+            
+            return -1;
+        }
+
+        if (res == 0) {
+            break;
+        }
+
+        close(s);
+    }
+
+    freeaddrinfo(ai);
+
+    if (res != 0) {
+        close(s);
+        this->state = READY;
+        
+        pthread_mutex_unlock(&(this->mutex));
+        
+        return -1;
+    }
+
+    this->state = CONNECTED;
+
+	lprintf("3. my_io_connect state: %d\n", this->state);
+
+    pthread_mutex_unlock(&(this->mutex));
+    
+    return s;    
+}
+
+//----------------------------------------------------------------------
 
 static void mms_buffer_init (mms_buffer_t *mms_buffer, uint8_t *buffer) {
   mms_buffer->buffer = buffer;
@@ -739,6 +925,307 @@ int static mms_choose_best_streams(mms_io_t *io, mms_t *this) {
   }
 
   return 1;
+}
+
+mms_t *mms_new () {
+    mms_t* this = (mms_t*)malloc(sizeof(mms_t));
+    if (!this) {
+        lprintf("mms_new error malloc mms_t\n");
+        return NULL;    
+    }
+    
+    memset(this, 0, sizeof(mms_t));
+    
+    this->state = READY;
+    pthread_mutex_init(&(this->mutex), NULL);
+ 
+    mms_io_t mms_my_io = {
+        NULL,
+        NULL,
+        my_io_read,
+        this,
+        my_io_write,
+        this,
+        my_io_connect,
+        this,
+    };
+    
+#if 0
+    mms_my_io->select = NULL;
+    mms_my_io->select_data = NULL;
+    
+    mms_my_io->connect = my_io_connect;
+    mms_my_io->connect_data = this;
+    
+    mms_my_io->read = my_io_read;
+    mms_my_io->read_data = this;
+    
+    mms_my_io->write = my_io_write;
+    mms_my_io->write_data = this;
+#endif
+    
+    mms_set_default_io_impl(&mms_my_io);
+    
+    return this;
+}
+
+int mms_connect_ex (mms_io_t *io, mms_t *this, void *data, const char *url, int bandwidth) {
+  iconv_t url_conv = (iconv_t)-1;
+  int     res;
+  uint32_t openid;
+  mms_buffer_t command_buffer;
+  
+  if (!url) {
+    lprintf("invalid url\n");
+    return -1;
+  }
+
+#ifdef _WIN32
+  if (!mms_internal_winsock_load())
+    return -1;
+#endif
+
+  this->url             = strdup (url);
+  this->s               = -1;
+  this->scmd_body       = this->scmd + CMD_HEADER_LEN + CMD_PREFIX_LEN;
+  this->need_discont    = 1;
+  this->buf_packet_seq_offset = -1;
+  this->bandwidth       = bandwidth;
+
+  this->guri = gnet_uri_new(this->url);
+  if(!this->guri) {
+    lprintf("invalid url\n");
+    goto fail;
+  }
+
+  /* MMS wants unescaped (so not percent coded) strings */
+  gnet_uri_unescape(this->guri);
+
+  this->proto = this->guri->scheme;
+  this->user = this->guri->user;
+  this->connect_host = this->guri->hostname;
+  this->connect_port = this->guri->port;
+  this->password = this->guri->passwd;
+  this->uri = gnet_mms_helper(this->guri, 0);
+
+  if(!this->uri)
+    goto fail;
+
+  if (!mms_valid_proto(this->proto)) {
+    lprintf("unsupported protocol: %s\n", this->proto);
+    goto fail;
+  }
+  
+  if (mms_tcp_connect(io, this)) {
+    goto fail;
+  }
+  
+  url_conv = iconv_open("UTF-16LE", "UTF-8");
+  if (url_conv == (iconv_t)-1) {
+    lprintf("could not get iconv handle to convert url to unicode\n");
+    goto fail;
+  }
+
+  /*
+   * let the negotiations begin...
+   */
+
+  /* command 0x1 */
+  lprintf("send command 0x01\n");
+  mms_buffer_init(&command_buffer, this->scmd_body);
+  mms_buffer_put_32 (&command_buffer, 0x0003001C);
+  mms_gen_guid(this->guid);
+  sprintf(this->str, "NSPlayer/7.0.0.1956; {%s}; Host: %s", this->guid,
+          this->connect_host);
+  res = string_utf16(url_conv, this->scmd_body + command_buffer.pos, this->str,
+                     CMD_BODY_LEN - command_buffer.pos);
+  if(!res)
+    goto fail;
+
+  if (!send_command(io, this, 1, 0, 0x0004000b, command_buffer.pos + res)) {
+    lprintf("failed to send command 0x01\n");
+    goto fail;
+  }
+  
+  if ((res = get_answer (io, this)) != 0x01) {
+    lprintf("unexpected response: %02x (0x01)\n", res);
+    goto fail;
+  }
+
+  res = LE_32(this->buf + 40);
+  if (res != 0) {
+    lprintf("error answer 0x01 status: %08x (%s)\n",
+            res, status_to_string(res));
+    goto fail;
+  }
+
+  /* TODO: insert network timing request here */
+  /* command 0x2 */
+  lprintf("send command 0x02\n");
+  mms_buffer_init(&command_buffer, this->scmd_body);
+  mms_buffer_put_32 (&command_buffer, 0x00000000);
+  mms_buffer_put_32 (&command_buffer, 0x00989680);
+  mms_buffer_put_32 (&command_buffer, 0x00000002);
+  res = string_utf16(url_conv, this->scmd_body + command_buffer.pos,
+                     "\\\\192.168.0.129\\TCP\\1037",
+                     CMD_BODY_LEN - command_buffer.pos);
+  if(!res)
+    goto fail;
+
+  if (!send_command(io, this, 2, 0, 0xffffffff, command_buffer.pos + res)) {
+    lprintf("failed to send command 0x02\n");
+    goto fail;
+  }
+
+  switch (res = get_answer (io, this)) {
+    case 0x02:
+      /* protocol accepted */
+      break;
+    case 0x03:
+      lprintf("protocol failed\n");
+      goto fail;
+    default:
+      lprintf("unexpected response: %02x (0x02 or 0x03)\n", res);
+      goto fail;
+  }
+
+  res = LE_32(this->buf + 40);
+  if (res != 0) {
+    lprintf("error answer 0x02 status: %08x (%s)\n",
+            res, status_to_string(res));
+    goto fail;
+  }
+
+  /* command 0x5 */
+  {
+    mms_buffer_t command_buffer;
+    
+    lprintf("send command 0x05\n");
+    mms_buffer_init(&command_buffer, this->scmd_body);
+    mms_buffer_put_32 (&command_buffer, 0x00000000); /* ?? */
+    mms_buffer_put_32 (&command_buffer, 0x00000000); /* ?? */
+
+    res = string_utf16(url_conv, this->scmd_body + command_buffer.pos,
+                       this->uri, CMD_BODY_LEN - command_buffer.pos);
+    if(!res)
+      goto fail;
+
+    if (!send_command(io, this, 5, 1, 0, command_buffer.pos + res)) {
+      lprintf("failed to send command 0x05\n");
+      goto fail;
+    }
+  }
+  
+  switch (res = get_answer (io, this)) {
+    case 0x06:
+      {
+        int xx, yy;
+        /* no authentication required */
+        openid = LE_32(this->buf + 48);
+      
+        /* Warning: sdp is not right here */
+        xx = this->buf[62];
+        yy = this->buf[63];
+        this->live_flag = ((xx == 0) && ((yy & 0xf) == 2));
+        this->seekable = !this->live_flag;
+        lprintf("openid=%d, live: live_flag=%d, xx=%d, yy=%d\n", openid, this->live_flag, xx, yy);
+      }
+      break;
+    case 0x1A:
+      /* authentication request, not yet supported */
+      lprintf("authentication request, not yet supported\n");
+      goto fail;
+      break;
+    default:
+      lprintf("unexpected response: %02x (0x06 or 0x1A)\n", res);
+      goto fail;
+  }
+
+  res = LE_32(this->buf + 40);
+  if (res != 0) {
+    lprintf("error answer 0x06 status: %08x (%s)\n",
+            res, status_to_string(res));
+    goto fail;
+  }
+
+  /* command 0x15 */
+  lprintf("send command 0x15\n");
+  {
+    mms_buffer_t command_buffer;
+    mms_buffer_init(&command_buffer, this->scmd_body);
+    mms_buffer_put_32 (&command_buffer, 0x00000000);                  /* ?? */
+    mms_buffer_put_32 (&command_buffer, 0x00008000);                  /* ?? */
+    mms_buffer_put_32 (&command_buffer, 0xFFFFFFFF);                  /* ?? */
+    mms_buffer_put_32 (&command_buffer, 0x00000000);                  /* ?? */
+    mms_buffer_put_32 (&command_buffer, 0x00000000);                  /* ?? */
+    mms_buffer_put_32 (&command_buffer, 0x00000000);                  /* ?? */
+    mms_buffer_put_32 (&command_buffer, 0x00000000);                  /* ?? */
+    mms_buffer_put_32 (&command_buffer, 0x40AC2000);                  /* ?? */
+    mms_buffer_put_32 (&command_buffer, ASF_HEADER_PACKET_ID_TYPE);   /* Header Packet ID type */
+    mms_buffer_put_32 (&command_buffer, 0x00000000);                  /* ?? */
+    if (!send_command (io, this, 0x15, openid, 0, command_buffer.pos)) {
+      lprintf("failed to send command 0x15\n");
+      goto fail;
+    }
+  }
+  
+  if ((res = get_answer (io, this)) != 0x11) {
+    lprintf("unexpected response: %02x (0x11)\n", res);
+    goto fail;
+  }
+
+  res = LE_32(this->buf + 40);
+  if (res != 0) {
+    lprintf("error answer 0x11 status: %08x (%s)\n",
+            res, status_to_string(res));
+    goto fail;
+  }
+
+  this->num_stream_ids = 0;
+
+  if (!get_asf_header (io, this))
+    goto fail;
+
+  interp_asf_header (this);
+  if (!this->asf_packet_len || !this->num_stream_ids)
+    goto fail;
+
+  if (!mms_choose_best_streams(io, this)) {
+    lprintf("mms_choose_best_streams failed\n");
+    goto fail;
+  }
+
+  /* command 0x07 */
+  this->packet_id_type = ASF_MEDIA_PACKET_ID_TYPE;
+  {
+    mms_buffer_t command_buffer;
+    mms_buffer_init(&command_buffer, this->scmd_body);
+    mms_buffer_put_32 (&command_buffer, 0x00000000);                  /* 64 byte float timestamp */
+    mms_buffer_put_32 (&command_buffer, 0x00000000);                  
+    mms_buffer_put_32 (&command_buffer, 0xFFFFFFFF);                  /* ?? */
+    mms_buffer_put_32 (&command_buffer, 0xFFFFFFFF);                  /* first packet sequence */
+    mms_buffer_put_8  (&command_buffer, 0xFF);                        /* max stream time limit (3 bytes) */
+    mms_buffer_put_8  (&command_buffer, 0xFF);
+    mms_buffer_put_8  (&command_buffer, 0xFF);
+    mms_buffer_put_8  (&command_buffer, 0x00);                        /* stream time limit flag */
+    mms_buffer_put_32 (&command_buffer, this->packet_id_type);    /* asf media packet id type */
+    if (!send_command (io, this, 0x07, 1, 0x0001FFFF, command_buffer.pos)) {
+      lprintf("failed to send command 0x07\n");
+      goto fail;
+    }
+  }
+
+  iconv_close(url_conv);
+  
+  lprintf("connect: passed\n");
+ 
+  return 0;
+
+fail:
+  if (url_conv != (iconv_t)-1)
+    iconv_close(url_conv);
+
+  return -1;
 }
 
 /*
@@ -1485,6 +1972,7 @@ void mms_close (mms_t *this) {
     gnet_uri_delete(this->guri);
   if (this->uri)
     free(this->uri);
+  pthread_mutex_destroy(&(this->mutex));
 
   free (this);
 }
@@ -1492,10 +1980,22 @@ void mms_close (mms_t *this) {
 void mms_abort (mms_t *this) {
   if (this == NULL)
     return;
+  pthread_mutex_lock(&(this->mutex));
+
+  lprintf("mms_abort state: %d\n", this->state);
+  
+  if (this->state != CONNECTED && this->state != CONNECTING) {
+    lprintf("mms_abort not connect, skip\n");
+    pthread_mutex_unlock(&(this->mutex));
+    return;
+  }
+  
   if (this->s != -1) {
     closesocket(this->s);
     this->s = -1;
   }
+  this->state = READY;
+  pthread_mutex_unlock(&(this->mutex));
 }
 
 double mms_get_time_length (mms_t *this) {

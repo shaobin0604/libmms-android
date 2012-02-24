@@ -32,10 +32,10 @@
 #define BUF_SIZE               102400   /* max packet size */
 #define ASF_HEADER_SIZE     (8192 * 2)  /* max header size */
 
-#define io_read(io, args...) ((io && io->read) ? (io)->read(io->read_data , ## args) : mms_default_io.read(NULL , ## args))
-#define io_write(io, args...) ((io && io->write) ? (io)->write(io->write_data , ## args) : mms_default_io.write(NULL , ## args))
-#define io_select(io, args...) ((io && io->select) ? (io)->select(io->select_data , ## args) : mms_default_io.select(NULL , ## args))
-#define io_connect(io, args...) ((io && io->connect) ? (io)->connect(io->connect_data , ## args) : mms_default_io.connect(NULL , ## args))
+#define io_read(io, args...) ((io && io->read) ? (io)->read(io->read_data , ## args) : mms_default_io.read(mms_default_io.read_data , ## args))
+#define io_write(io, args...) ((io && io->write) ? (io)->write(io->write_data , ## args) : mms_default_io.write(mms_default_io.write_data , ## args))
+#define io_select(io, args...) ((io && io->select) ? (io)->select(io->select_data , ## args) : mms_default_io.select(mms_default_io.select_data , ## args))
+#define io_connect(io, args...) ((io && io->connect) ? (io)->connect(io->connect_data , ## args) : mms_default_io.connect(mms_default_io.connect_data , ## args))
 
 #ifdef _WIN32
 #define set_errno(_err)     WSASetLastError(_err)

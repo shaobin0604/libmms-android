@@ -1,6 +1,10 @@
+2012-02-24
+* [new] add non-blocking connect, read, write.
+* [new] add abort support in connecting state.
+
 2011-11-14
 ----------
- * add mms abort function
+* [new] add mms abort function
 
 
  

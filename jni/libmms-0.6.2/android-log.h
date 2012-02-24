@@ -22,11 +22,11 @@
 #include <android/log.h>
 
 
-#ifdef AACD_LOGLEVEL_TRACE
-#define ALOG_TRACE(...) \
+#ifdef AACD_LOGLEVEL_VERBOSE
+#define ALOG_VERBOSE(...) \
     __android_log_print(ANDROID_LOG_VERBOSE, ANDROID_LOG_MODULE, __VA_ARGS__)
 #else
-#define ALOG_TRACE(...) //
+#define ALOG_VERBOSE(...) //
 #endif
 
 #ifdef AACD_LOGLEVEL_DEBUG
